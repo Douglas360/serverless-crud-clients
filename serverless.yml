@@ -1,0 +1,46 @@
+service: serverless-crud-clients
+
+frameworkVersion: "3"
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+  stage: dev
+  environment:
+    DYNAMODB_TABLE: ClientsTable
+
+functions:
+  main:
+    handler: dist/index.handler
+    # Mapeamento de eventos do API Gateway
+    events:
+      - http:
+          path: /clients
+          method: GET
+      - http:
+          path: /clients
+          method: POST
+      - http:
+          path: /clients/{id}
+          method: GET
+      - http:
+          path: /clients/{id}
+          method: PUT
+      - http:
+          path: /clients/{id}
+          method: DELETE
+
+resources:
+  Resources:
+    ClientsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_TABLE}
+        AttributeDefinitions:
+          - AttributeName: clientId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: clientId
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST

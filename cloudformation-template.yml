@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CloudFormation Template for Serverless Client CRUD"
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+    Description: "Deployment environment"
+
+Resources:
+  # DynamoDB Table
+  ClientsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "ClientsTable-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: clientId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: clientId
+          KeyType: HASH
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # IAM Role for Lambda function
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ClientCRUDLambdaRole-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "LambdaDynamoDBAccess-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt ClientsTable.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+
+  # Lambda Function
+  ClientCRUDLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "ClientCRUDFunction-${Environment}"
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: "serverless-crud-client" # Bucket S3 onde o código da lambda está armazenado
+        S3Key: "index.zip" # Nome do arquivo ZIP contendo o código compilado
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref ClientsTable
+
+  # API Gateway
+  ClientAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "ClientAPI-${Environment}"
+      Description: "API Gateway for Client CRUD operations"
+
+  # API Gateway Root Resource
+  ClientsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ClientAPI.RootResourceId
+      PathPart: clients
+      RestApiId: !Ref ClientAPI
+
+  # API Gateway Methods
+  GetClientsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      ResourceId: !Ref ClientsResource
+      RestApiId: !Ref ClientAPI
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations"
+            - LambdaArn: !GetAtt ClientCRUDLambda.Arn
+
+  PostClientMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref ClientsResource
+      RestApiId: !Ref ClientAPI
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations"
+            - LambdaArn: !GetAtt ClientCRUDLambda.Arn
+
+  ClientIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref ClientsResource
+      PathPart: "{id}"
+      RestApiId: !Ref ClientAPI
+
+  GetClientByIdMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      ResourceId: !Ref ClientIdResource
+      RestApiId: !Ref ClientAPI
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations"
+            - LambdaArn: !GetAtt ClientCRUDLambda.Arn
+
+  DeleteClientMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: DELETE
+      ResourceId: !Ref ClientIdResource
+      RestApiId: !Ref ClientAPI
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations"
+            - LambdaArn: !GetAtt ClientCRUDLambda.Arn
+
+  # API Gateway Deployment
+  ClientAPIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - GetClientsMethod
+      - PostClientMethod
+      - GetClientByIdMethod
+      - DeleteClientMethod
+    Properties:
+      RestApiId: !Ref ClientAPI
+      StageName: !Ref Environment
+
+  # Lambda Permission for API Gateway
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref ClientCRUDLambda
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ClientAPI}/*/*"
+
+Outputs:
+  ApiUrl:
+    Description: "Base URL for the API Gateway"
+    Value: !Sub "https://${ClientAPI}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/clients"
+
+  DynamoDBTableName:
+    Description: "Name of the DynamoDB table"
+    Value: !Ref ClientsTable
+
+  LambdaFunctionName:
+    Description: "Lambda function name"
+    Value: !Ref ClientCRUDLambda
